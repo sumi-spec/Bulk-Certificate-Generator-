@@ -1,17 +1,33 @@
 """Business logic service for Certificate Jobs and Recipients."""
 
 import math
+import socket
+import threading
 import uuid
+from urllib.parse import urlparse
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
+from app.core.config import settings
 from app.core.logging import logger
 from app.core.metrics import metrics_registry
 from app.models import CertificateModel, JobModel, JobStatus, RecipientModel, RecipientStatus
 from app.schemas.job import JobCreate
 from app.schemas.recipient import RecipientResultResponse
 from app.tasks.certificate_tasks import process_bulk_certificate_job
+
+
+def is_broker_online(broker_url: str) -> bool:
+    """Quickly check if the Celery broker socket is reachable (timeout: 200ms)."""
+    try:
+        parsed = urlparse(broker_url)
+        host = parsed.hostname or "localhost"
+        port = parsed.port or 6379
+        with socket.create_connection((host, port), timeout=0.2):
+            return True
+    except (OSError, TimeoutError):
+        return False
 
 
 class JobService:
@@ -66,18 +82,42 @@ class JobService:
         db.commit()
         db.refresh(job)
 
-        # Dispatch background task to Celery
-        try:
-            process_bulk_certificate_job.delay(str(job.id))
-            metrics_registry.record_job_submitted()
+        # Dispatch background task: Celery if broker reachable, otherwise local background thread
+        if is_broker_online(settings.CELERY_BROKER_URL):
+            try:
+                process_bulk_certificate_job.apply_async(args=[str(job.id)])
+                metrics_registry.record_job_submitted()
+                logger.info(
+                    "Enqueued background job_id: %s with %d recipients via Celery",
+                    job.id,
+                    total_recipients,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Celery dispatch failed (%s). Falling back to background worker thread.", exc
+                )
+                JobService._dispatch_local_thread(str(job.id))
+        else:
             logger.info(
-                "Enqueued background job_id: %s with %d recipients", job.id, total_recipients
+                "Celery broker offline. Processing job_id: %s via local background worker thread.",
+                job.id,
             )
-        except Exception as exc:
-            # If broker is offline during local testing, log warning without failing API creation
-            logger.warning("Could not dispatch job %s to Celery broker: %s", job.id, exc)
+            metrics_registry.record_job_submitted()
+            JobService._dispatch_local_thread(str(job.id))
 
         return job
+
+    @staticmethod
+    def _dispatch_local_thread(job_id_str: str) -> None:
+        """Runs bulk job processing in a background thread for standalone local development."""
+        def _worker_runner():
+            from app.core.database import SessionLocal
+            from app.tasks.certificate_tasks import execute_bulk_job_logic
+
+            with SessionLocal() as worker_db:
+                execute_bulk_job_logic(job_id_str=job_id_str, db=worker_db)
+
+        threading.Thread(target=_worker_runner, daemon=True).start()
 
     @staticmethod
     def get_job_by_id(db: Session, job_id: uuid.UUID) -> JobModel | None:

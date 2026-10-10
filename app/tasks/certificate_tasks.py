@@ -196,6 +196,7 @@ def execute_bulk_job_logic(job_id_str: str, db: Session) -> dict[str, Any]:
 @celery_app.task(
     bind=True,
     name="process_bulk_certificate_job",
+    ignore_result=True,
     max_retries=3,
     default_retry_delay=5,
     autoretry_for=(OperationalError,),

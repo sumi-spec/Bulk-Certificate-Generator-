@@ -22,5 +22,7 @@ celery_app.conf.update(
     task_acks_late=True,
     # worker_prefetch_multiplier=1 prevents a single worker from hoarding tasks
     worker_prefetch_multiplier=1,
-    broker_connection_retry_on_startup=True,
+    broker_connection_retry_on_startup=False,
+    broker_connection_max_retries=1,
+    broker_connection_timeout=1.0,
 )
