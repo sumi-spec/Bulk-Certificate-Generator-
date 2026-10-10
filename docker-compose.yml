@@ -1,0 +1,145 @@
+# ==============================================================================
+# Docker Compose Production Topology for Bulk Certificate Generator
+# ==============================================================================
+
+services:
+
+  # ----------------------------------------------------------------------------
+  # PostgreSQL Database Service
+  # ----------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    container_name: cert_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cert_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cert_password}
+      POSTGRES_DB: ${POSTGRES_DB:-cert_db}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cert_user} -d ${POSTGRES_DB:-cert_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # Redis Message Broker Service
+  # ----------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    container_name: cert_redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 3s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # FastAPI API Service
+  # ----------------------------------------------------------------------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cert_api
+    restart: unless-stopped
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "${API_PORT:-8000}:8000"
+    environment:
+      APP_NAME: "${APP_NAME:-Bulk Certificate Generator}"
+      APP_ENV: "${APP_ENV:-production}"
+      DEBUG: "${DEBUG:-false}"
+      DATABASE_URL: "postgresql+psycopg2://${POSTGRES_USER:-cert_user}:${POSTGRES_PASSWORD:-cert_password}@db:5432/${POSTGRES_DB:-cert_db}"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      STORAGE_DIR: "/app/storage/certificates"
+      MAX_RECIPIENTS_PER_JOB: "${MAX_RECIPIENTS_PER_JOB:-5000}"
+      CHUNK_SIZE: "${CHUNK_SIZE:-50}"
+      MAX_REQUEST_BODY_BYTES: "${MAX_REQUEST_BODY_BYTES:-10485760}"
+      RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-120}"
+      API_KEY: "${API_KEY:-}"
+      ALLOWED_ORIGINS: "${ALLOWED_ORIGINS:-*}"
+    volumes:
+      - cert_storage:/app/storage/certificates
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ----------------------------------------------------------------------------
+  # Celery Background Worker Service
+  # ----------------------------------------------------------------------------
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cert_worker
+    restart: unless-stopped
+    command: ["celery", "-A", "app.core.celery_app.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    environment:
+      APP_NAME: "${APP_NAME:-Bulk Certificate Generator}"
+      APP_ENV: "${APP_ENV:-production}"
+      DEBUG: "${DEBUG:-false}"
+      DATABASE_URL: "postgresql+psycopg2://${POSTGRES_USER:-cert_user}:${POSTGRES_PASSWORD:-cert_password}@db:5432/${POSTGRES_DB:-cert_db}"
+      CELERY_BROKER_URL: "redis://redis:6379/0"
+      CELERY_RESULT_BACKEND: "redis://redis:6379/1"
+      STORAGE_DIR: "/app/storage/certificates"
+      CHUNK_SIZE: "${CHUNK_SIZE:-50}"
+    volumes:
+      - cert_storage:/app/storage/certificates
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+# ------------------------------------------------------------------------------
+# Persistent Named Volumes
+# ------------------------------------------------------------------------------
+volumes:
+  postgres_data:
+    name: cert_postgres_data
+  redis_data:
+    name: cert_redis_data
+  cert_storage:
+    name: cert_shared_storage

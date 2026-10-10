@@ -1,0 +1,214 @@
+{
+  "info": {
+    "_postman_id": "b1b60d4b-7f32-4d51-87a2-19e917d23f33",
+    "name": "Bulk Certificate Generator API",
+    "description": "Production-grade Postman collection for the Bulk Certificate Generator API. Includes request workflows, variable propagation, and automated test scripts.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8000",
+      "type": "string"
+    },
+    {
+      "key": "apiKey",
+      "value": "dev-super-secret-key-change-in-production",
+      "type": "string"
+    },
+    {
+      "key": "jobId",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "certificateId",
+      "value": "",
+      "type": "string"
+    }
+  ],
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "1. Health & Readiness Probe",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health",
+              "host": ["{{baseUrl}}"],
+              "path": ["health"]
+            },
+            "description": "Checks system readiness, database connectivity, and Redis broker availability."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Certificate Jobs",
+      "item": [
+        {
+          "name": "2. Create Bulk Certificate Job",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.job_id) {",
+                  "    pm.collectionVariables.set('jobId', jsonData.job_id);",
+                  "    console.log('Saved jobId:', jsonData.job_id);",
+                  "}",
+                  "pm.test('Status code is 202', function () {",
+                  "    pm.response.to.have.status(202);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "key": "Idempotency-Key",
+                "value": "idem-bulk-batch-001"
+              },
+              {
+                "key": "X-API-Key",
+                "value": "{{apiKey}}"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"event_name\": \"Cloud Architecture & Distributed Systems Summit 2026\",\n  \"issuer_name\": \"Global Software Academy\",\n  \"issue_date\": \"2026-10-10\",\n  \"recipients\": [\n    {\n      \"name\": \"Alice Wonderland\",\n      \"email\": \"alice@example.com\",\n      \"custom_identifier\": \"ID-ALICE-001\"\n    },\n    {\n      \"name\": \"Bob Architect\",\n      \"email\": \"bob@example.com\",\n      \"custom_identifier\": \"ID-BOB-002\"\n    },\n    {\n      \"name\": \"François Müller-Schütz\",\n      \"email\": \"francois@example.org\"\n    }\n  ]\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/certificate-jobs",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "certificate-jobs"]
+            },
+            "description": "Submits a bulk job. Asynchronously processes recipients in the background."
+          },
+          "response": []
+        },
+        {
+          "name": "3. Get Job Status & Progress",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/certificate-jobs/{{jobId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "certificate-jobs", "{{jobId}}"]
+            },
+            "description": "Polls real-time job execution progress, total recipients, success count, and failure count."
+          },
+          "response": []
+        },
+        {
+          "name": "4. Get Job Results (Paginated)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "var jsonData = pm.response.json();",
+                  "if (jsonData.results && jsonData.results.length > 0) {",
+                  "    var firstSuccess = jsonData.results.find(r => r.certificate_id !== null);",
+                  "    if (firstSuccess) {",
+                  "        pm.collectionVariables.set('certificateId', firstSuccess.certificate_id);",
+                  "        console.log('Saved certificateId:', firstSuccess.certificate_id);",
+                  "    }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/certificate-jobs/{{jobId}}/results?page=1&page_size=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "certificate-jobs", "{{jobId}}", "results"],
+              "query": [
+                {
+                  "key": "page",
+                  "value": "1"
+                },
+                {
+                  "key": "page_size",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Retrieves itemized recipient outcomes. Automatically saves the first issued certificate ID to collection variables."
+          },
+          "response": []
+        },
+        {
+          "name": "5. Get Job Results (Filter by FAILED)",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/certificate-jobs/{{jobId}}/results?status=FAILED",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "certificate-jobs", "{{jobId}}", "results"],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "FAILED"
+                }
+              ]
+            },
+            "description": "Filters recipient results to inspect only failed entries and error messages."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "Certificates",
+      "item": [
+        {
+          "name": "6. Download Certificate PDF",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/certificates/{{certificateId}}",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "certificates", "{{certificateId}}"]
+            },
+            "description": "Downloads the vector PDF certificate binary file directly."
+          },
+          "response": []
+        },
+        {
+          "name": "7. Get Certificate Metadata & SHA256",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/api/v1/certificates/{{certificateId}}/metadata",
+              "host": ["{{baseUrl}}"],
+              "path": ["api", "v1", "certificates", "{{certificateId}}", "metadata"]
+            },
+            "description": "Retrieves JSON metadata, verification details, and the SHA256 checksum for audit and integrity verification."
+          },
+          "response": []
+        }
+      ]
+    }
+  ]
+}

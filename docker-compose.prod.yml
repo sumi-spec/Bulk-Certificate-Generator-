@@ -1,0 +1,190 @@
+services:
+  # ============================================================================
+  # Reverse Proxy & TLS Ingress (Nginx)
+  # ============================================================================
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: cert_prod_nginx
+    restart: always
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - certbot_certs:/etc/letsencrypt:ro
+      - certbot_challenge:/var/www/certbot:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - internal_net
+      - public_net
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ============================================================================
+  # Relational Database (PostgreSQL 16) - Note: If using AWS RDS, omit this
+  # ============================================================================
+  db:
+    image: postgres:16-alpine
+    container_name: cert_prod_db
+    restart: always
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cert_prod_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me_strong_prod_db_pw}
+      POSTGRES_DB: ${POSTGRES_DB:-cert_prod_db}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cert_prod_user} -d ${POSTGRES_DB:-cert_prod_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1536M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ============================================================================
+  # Message Broker & Result Store (Redis with Append-Only File Persistence)
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    container_name: cert_prod_redis
+    restart: always
+    command: >
+      redis-server
+      --appendonly yes
+      --appendfsync everysec
+      --save 900 1
+      --save 300 10
+      --maxmemory 512mb
+      --maxmemory-policy noeviction
+    volumes:
+      - redis_data:/data
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 768M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ============================================================================
+  # FastAPI Application Backend
+  # ============================================================================
+  api:
+    image: ${IMAGE_TAG:-bulk-certificate-generator:latest}
+    container_name: cert_prod_api
+    restart: always
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      - APP_ENV=production
+      - DEBUG=false
+    volumes:
+      - cert_storage:/app/storage/certificates
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - internal_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    deploy:
+      resources:
+        limits:
+          cpus: "1.5"
+          memory: 1024M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # ============================================================================
+  # Asynchronous Task Worker (Celery with Graceful Shutdown Protection)
+  # ============================================================================
+  worker:
+    image: ${IMAGE_TAG:-bulk-certificate-generator:latest}
+    container_name: cert_prod_worker
+    restart: always
+    stop_grace_period: 60s
+    env_file:
+      - path: .env.production
+        required: false
+    environment:
+      - APP_ENV=production
+      - DEBUG=false
+    command: ["celery", "-A", "app.core.celery_app", "worker", "--loglevel=info", "--concurrency=4"]
+    volumes:
+      - cert_storage:/app/storage/certificates
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    networks:
+      - internal_net
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 2048M
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  postgres_data:
+    name: cert_prod_postgres_data
+  redis_data:
+    name: cert_prod_redis_data
+  cert_storage:
+    name: cert_prod_storage
+  certbot_certs:
+    name: cert_prod_certbot_certs
+  certbot_challenge:
+    name: cert_prod_certbot_challenge
+
+networks:
+  internal_net:
+    driver: bridge
+    internal: true
+  public_net:
+    driver: bridge
