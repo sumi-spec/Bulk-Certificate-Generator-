@@ -1,6 +1,8 @@
 """Integration tests for Certificate Jobs and Certificate endpoints."""
 
+import io
 import uuid
+import zipfile
 from datetime import UTC, date, datetime
 
 from app.models import CertificateModel, JobModel, JobStatus, RecipientModel, RecipientStatus
@@ -285,3 +287,104 @@ def test_create_job_broker_dispatch_failure_gracefully_handled(client, monkeypat
     assert response.status_code == 202
     data = response.json()
     assert "job_id" in data
+
+
+def test_download_all_certificates_zip_endpoints(client, db_session):
+    """Verify downloading all certificates as a single ZIP archive."""
+    # 404 for unknown job
+    res_404 = client.get(f"/api/v1/certificate-jobs/{uuid.uuid4()}/download-zip")
+    assert res_404.status_code == 404
+
+    # Setup job with no certificates
+    job = JobModel(
+        event_name="Pending Workshop",
+        issuer_name="Workshop Org",
+        issue_date=date(2026, 10, 10),
+        status=JobStatus.PENDING,
+        total_recipients=1,
+    )
+    db_session.add(job)
+    db_session.commit()
+
+    res_no_certs = client.get(f"/api/v1/certificate-jobs/{job.id}/download-zip")
+    assert res_no_certs.status_code == 400
+    assert "no certificates have been successfully generated" in res_no_certs.json()["detail"].lower()
+
+    # Add certificate with mock file on storage
+    recipient = RecipientModel(
+        job_id=job.id,
+        name="Zip Test Recipient",
+        email="zip@example.com",
+        status=RecipientStatus.SUCCESS,
+    )
+    db_session.add(recipient)
+    db_session.flush()
+
+    rel_path = f"test_zip/{job.id}/cert.pdf"
+    _, size, sha = storage_service.save_file(rel_path, b"%PDF-1.4 test zip content")
+
+    cert = CertificateModel(
+        job_id=job.id,
+        recipient_id=recipient.id,
+        file_name="cert.pdf",
+        file_path=rel_path,
+        file_size_bytes=size,
+        sha256_checksum=sha,
+        issued_at=datetime.now(UTC),
+    )
+    db_session.add(cert)
+    db_session.commit()
+
+    # Download ZIP
+    res_zip = client.get(f"/api/v1/certificate-jobs/{job.id}/download-zip")
+    assert res_zip.status_code == 200
+    assert res_zip.headers["content-type"] == "application/zip"
+    assert "attachment; filename=" in res_zip.headers["content-disposition"]
+
+    # Verify valid ZIP archive contents
+    with zipfile.ZipFile(io.BytesIO(res_zip.content), "r") as zf:
+        namelist = zf.namelist()
+        assert "cert.pdf" in namelist
+        assert zf.read("cert.pdf") == b"%PDF-1.4 test zip content"
+
+
+def test_certificate_download_inline(client, db_session):
+    """Verify inline query param sets Content-Disposition to inline."""
+    rel_path = "inline_test/cert_inline.pdf"
+    _, size, sha = storage_service.save_file(rel_path, b"%PDF-1.4 inline content")
+
+    job = JobModel(
+        event_name="Inline Test",
+        issuer_name="Inline Org",
+        issue_date=date(2026, 10, 10),
+        status=JobStatus.COMPLETED,
+        total_recipients=1,
+    )
+    db_session.add(job)
+    db_session.flush()
+
+    recipient = RecipientModel(
+        job_id=job.id,
+        name="Inline User",
+        email="inline@example.com",
+        status=RecipientStatus.SUCCESS,
+    )
+    db_session.add(recipient)
+    db_session.flush()
+
+    cert = CertificateModel(
+        job_id=job.id,
+        recipient_id=recipient.id,
+        file_name="cert_inline.pdf",
+        file_path=rel_path,
+        file_size_bytes=size,
+        sha256_checksum=sha,
+        issued_at=datetime.now(UTC),
+    )
+    db_session.add(cert)
+    db_session.commit()
+
+    res_inline = client.get(f"/api/v1/certificates/{cert.id}?inline=true")
+    assert res_inline.status_code == 200
+    assert "inline; filename=" in res_inline.headers["content-disposition"]
+

@@ -1,12 +1,18 @@
 """Endpoints for Bulk Certificate Generation Jobs."""
 
+import io
+import re
 import uuid
+import zipfile
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import enforce_rate_limit, verify_api_key
+from app.models import CertificateModel
 from app.models.enums import RecipientStatus
 from app.schemas.job import (
     JobCreate,
@@ -15,6 +21,7 @@ from app.schemas.job import (
     JobStatusResponse,
 )
 from app.services.job_service import job_service
+from app.services.storage import storage_service
 
 router = APIRouter(prefix="/certificate-jobs", tags=["Certificate Jobs"])
 
@@ -107,4 +114,60 @@ def get_job_results(
         total_records=total_records,
         total_pages=total_pages,
         results=results,
+    )
+
+
+@router.get(
+    "/{job_id}/download-zip",
+    summary="Download all generated certificates as a single ZIP archive",
+    description="Packages all issued PDF certificates for the job into an unencrypted ZIP archive for 1-click batch download.",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "content": {"application/zip": {}},
+            "description": "Returns a ZIP archive containing all generated certificate PDFs.",
+        },
+        404: {"description": "Job not found."},
+        400: {"description": "No certificates available for download."},
+    },
+)
+def download_all_certificates_zip(job_id: uuid.UUID, db: Session = Depends(get_db)):
+    """Packages all generated certificates for a job into a downloadable ZIP archive."""
+    job = job_service.get_job_by_id(db=db, job_id=job_id)
+    if not job:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Certificate generation job '{job_id}' not found.",
+        )
+
+    certificates = (
+        db.execute(select(CertificateModel).where(CertificateModel.job_id == job_id))
+        .scalars()
+        .all()
+    )
+
+    if not certificates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No certificates have been successfully generated for this job yet.",
+        )
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for cert in certificates:
+            try:
+                full_path = storage_service.get_file_path(cert.file_path)
+                if full_path.exists():
+                    zip_file.write(full_path, arcname=cert.file_name)
+            except Exception:
+                continue
+
+    zip_buffer.seek(0)
+    event_slug = re.sub(r"[^a-zA-Z0-9_-]", "_", job.event_name)[:25]
+    zip_filename = f"certificates_{event_slug}_{str(job.id)[:8]}.zip"
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )
