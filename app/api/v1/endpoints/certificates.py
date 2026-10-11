@@ -2,7 +2,7 @@
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
@@ -26,7 +26,13 @@ router = APIRouter(prefix="/certificates", tags=["Certificates"])
         404: {"description": "Certificate record or storage file not found."},
     },
 )
-def download_certificate(certificate_id: uuid.UUID, db: Session = Depends(get_db)):
+def download_certificate(
+    certificate_id: uuid.UUID,
+    inline: bool = Query(
+        False, description="If true, renders inline in browser; otherwise forces download attachment"
+    ),
+    db: Session = Depends(get_db),
+):
     """Streams the issued PDF certificate file."""
     certificate = job_service.get_certificate_by_id(db=db, certificate_id=certificate_id)
     if not certificate:
@@ -43,12 +49,13 @@ def download_certificate(certificate_id: uuid.UUID, db: Session = Depends(get_db
             detail=f"Certificate file is missing from storage: {exc}",
         ) from exc
 
+    disposition = "inline" if inline else "attachment"
     return FileResponse(
         path=str(file_path),
         media_type="application/pdf",
         filename=certificate.file_name,
         headers={
-            "Content-Disposition": f'attachment; filename="{certificate.file_name}"',
+            "Content-Disposition": f'{disposition}; filename="{certificate.file_name}"',
             "X-Certificate-Checksum": certificate.sha256_checksum,
         },
     )
