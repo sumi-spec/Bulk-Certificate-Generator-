@@ -388,3 +388,15 @@ def test_certificate_download_inline(client, db_session):
     assert res_inline.status_code == 200
     assert "inline; filename=" in res_inline.headers["content-disposition"]
 
+
+def test_backend_root_json_endpoint(client):
+    """Verify that GET / returns pure backend JSON metadata with docs links."""
+    response = client.get("/")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "online"
+    assert data["docs"] == "/docs"
+    assert data["health"] == "/health"
+    assert data["api_v1_prefix"] == "/api/v1"
+
+

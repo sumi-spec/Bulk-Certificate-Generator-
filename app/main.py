@@ -726,9 +726,30 @@ def create_application() -> FastAPI:
             },
         )
 
-    # Interactive Web Interface
-    @application.get("/", response_class=HTMLResponse, include_in_schema=False)
-    def index():
+    # Pure Backend Root API Endpoint
+    @application.get(
+        "/",
+        summary="Backend API Root Information",
+        description="Returns backend service metadata, environment status, and API documentation endpoints.",
+        tags=["System"],
+    )
+    def api_root():
+        return {
+            "name": settings.APP_NAME,
+            "version": "1.0.0",
+            "status": "online",
+            "environment": settings.APP_ENV,
+            "docs": "/docs",
+            "redoc": "/redoc",
+            "openapi": "/openapi.json",
+            "health": "/health",
+            "metrics": "/metrics",
+            "api_v1_prefix": settings.API_V1_STR,
+        }
+
+    # Optional Web Portal
+    @application.get("/portal", response_class=HTMLResponse, include_in_schema=False)
+    def portal():
         return HTMLResponse(content=INDEX_HTML)
 
     # Mount Routers
