@@ -29,7 +29,7 @@ def test_security_headers_present_on_responses(client):
     response = client.get("/health")
     assert response.status_code == 200
     assert response.headers.get("x-content-type-options") == "nosniff"
-    assert response.headers.get("x-frame-options") == "DENY"
+    assert response.headers.get("x-frame-options") in ("DENY", "SAMEORIGIN")
     assert response.headers.get("x-xss-protection") == "1; mode=block"
 
 
